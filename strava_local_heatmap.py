@@ -36,10 +36,20 @@ HEATMAP_MARGIN_SIZE = 32 # margin around heatmap trackpoints in pixel
 
 PLT_COLORMAP = 'hot' # matplotlib color map
 
-OSM_TILE_SERVER = 'https://maps.wikimedia.org/osm-intl/{}/{}/{}.png' # OSM tile url from https://wiki.openstreetmap.org/wiki/Tile_servers
+#OSM_TILE_SERVER = 'https://maps.wikimedia.org/osm-intl/{}/{}/{}.png' # OSM tile url from https://wiki.openstreetmap.org/wiki/Tile_servers
+# https://wiki.openstreetmap.org/wiki/Raster_tile_providers
+MAP_PROVIDERS = {
+    0: {'name': 'blank'},
+    1: {'name': 'osm_de', 'url': 'https://tile.openstreetmap.de/{}/{}/{}.png'},
+    2: {'name': 'osm_fr_hot', 'url': 'https://a.tile.openstreetmap.fr/hot/{}/{}/{}.png'},
+    3: {'name': 'osm_fr', 'url': 'https://a.tile.openstreetmap.fr/osmfr/{}/{}/{}.png'},
+}
 OSM_TILE_SIZE = 256 # OSM tile size in pixel
 OSM_MAX_ZOOM = 19 # OSM maximum zoom level
-OSM_MAX_TILE_COUNT = 100 # maximum number of tiles to download
+#OSM_MAX_TILE_COUNT = 100 # maximum number of tiles to download
+OSM_MAX_TILE_COUNT = 1000 # maximum number of tiles to download
+
+DEFAULT_MAP_PROVIDER = 2
 
 # functions
 def deg2xy(lat_deg: float, lon_deg: float, zoom: int) -> tuple[float, float]:
@@ -104,6 +114,16 @@ def download_tile(tile_url: str, tile_file: str) -> bool:
     time.sleep(0.1)
 
     return True
+
+def list_providers():
+    result_list = []
+    for provider in MAP_PROVIDERS:
+        result_list.append(f'''{provider} - {MAP_PROVIDERS[provider]['name']}''')
+    return ', '.join(result_list)
+
+def validate_args(args):
+    if (args.provider not in MAP_PROVIDERS):
+        exit(f'Specified provider "{args.provider}" does not exist. See help')
 
 def main(args: Namespace) -> None:
     # read GPX trackpoints
@@ -186,7 +206,10 @@ def main(args: Namespace) -> None:
         exit('ERROR zoom value too high, too many tiles to download')
 
     # download tiles
-    os.makedirs('tiles', exist_ok=True)
+    tiles_dir = MAP_PROVIDERS[args.provider]['name']
+    tiles_url = MAP_PROVIDERS[args.provider].get('url')
+    if tiles_url:
+        os.makedirs(tiles_dir, exist_ok=True)
 
     supertile = np.zeros(((y_tile_max-y_tile_min+1)*OSM_TILE_SIZE,
                           (x_tile_max-x_tile_min+1)*OSM_TILE_SIZE, 3))
@@ -194,30 +217,35 @@ def main(args: Namespace) -> None:
     n = 0
     for x in range(x_tile_min, x_tile_max+1):
         for y in range(y_tile_min, y_tile_max+1):
-            n += 1
+            if tiles_url is None:
+                tile = np.ones((OSM_TILE_SIZE, OSM_TILE_SIZE, 3))
+            else:
+                n += 1
 
-            tile_file = 'tiles/tile_{}_{}_{}.png'.format(zoom, x, y)
+                tile_file = '{}/tile_{}_{}_{}.png'.format(tiles_dir, zoom, x, y)
 
-            if not glob.glob(tile_file):
-                print('downloading tile {}/{}'.format(n, tile_count))
+                if not glob.glob(tile_file):
+                    print('downloading tile {}/{}'.format(n, tile_count))
 
-                tile_url = OSM_TILE_SERVER.format(zoom, x, y)
+                    tile_url = tiles_url.format(zoom, x, y)
 
-                if not download_tile(tile_url, tile_file):
-                    print('ERROR downloading tile {} failed, using blank tile'.format(tile_url))
+                    if not download_tile(tile_url, tile_file):
+                        print('ERROR downloading tile {} failed, using blank tile'.format(tile_url))
 
-                    tile = np.ones((OSM_TILE_SIZE,
-                                    OSM_TILE_SIZE, 3))
+                        tile = np.ones((OSM_TILE_SIZE,
+                                        OSM_TILE_SIZE, 3))
 
-                    plt.imsave(tile_file, tile)
+                        plt.imsave(tile_file, tile)
 
-            tile = plt.imread(tile_file)
+                tile = plt.imread(tile_file)
 
             i = y-y_tile_min
             j = x-x_tile_min
 
             supertile[i*OSM_TILE_SIZE:(i+1)*OSM_TILE_SIZE,
-                      j*OSM_TILE_SIZE:(j+1)*OSM_TILE_SIZE, :] = tile[:, :, :3]
+                    j*OSM_TILE_SIZE:(j+1)*OSM_TILE_SIZE, :] = tile[:, :, :3]
+
+    print('Calculating...')
 
     if not args.orange:
         supertile = np.sum(supertile*[0.2126, 0.7152, 0.0722], axis=2) # to grayscale
@@ -296,13 +324,17 @@ def main(args: Namespace) -> None:
                           max(j_min-HEATMAP_MARGIN_SIZE, 0):min(j_max+HEATMAP_MARGIN_SIZE, supertile.shape[1])]
 
     # save image
-    plt.imsave(args.output, supertile)
+    if (not args.output):
+        filename = 'heatmap_{}_{}.png'.format(args.zoom, MAP_PROVIDERS[args.provider]['name'])
+    else:
+        filename = args.output
+    plt.imsave(filename, supertile)
 
-    print('Saved {}'.format(args.output))
+    print('Saved {}'.format(filename))
 
     # save csv
     if args.csv and not args.orange:
-        csv_file = '{}.csv'.format(os.path.splitext(args.output)[0])
+        csv_file = '{}.csv'.format(os.path.splitext(filename)[0])
 
         with open(csv_file, 'w') as file:
             file.write('latitude,longitude,intensity\n')
@@ -322,8 +354,9 @@ def main(args: Namespace) -> None:
     return
 
 if __name__ == '__main__':
-    parser = ArgumentParser(description='Generate a PNG heatmap from local Strava GPX files',
-                            epilog='Report issues to https://github.com/remisalmon/Strava-local-heatmap/issues')
+    parser = ArgumentParser(description='Generate a PNG heatmap from local Strava GPX files')
+    #parser = ArgumentParser(description='Generate a PNG heatmap from local Strava GPX files',
+    #                        epilog='Report issues to https://github.com/remisalmon/Strava-local-heatmap/issues')
 
     parser.add_argument('--dir', default='gpx',
                         help='GPX files directory  (default: gpx)')
@@ -333,8 +366,8 @@ if __name__ == '__main__':
                         help='GPX files year(s) filter (default: all)')
     parser.add_argument('--bounds', type=float, nargs=4, metavar='BOUND', default=[-90.0, +90.0, -180.0, +180.0],
                         help='heatmap bounding box as lat_min, lat_max, lon_min, lon_max (default: -90 +90 -180 +180)')
-    parser.add_argument('--output', default='heatmap.png',
-                        help='heatmap name (default: heatmap.png)')
+    parser.add_argument('--output',
+                        help='heatmap file name (default: will be calculated heatmap_{zoom}_{map_provider_name}.png)')
     parser.add_argument('--zoom', type=int, default=-1,
                         help='heatmap zoom level 0-19 or -1 for auto (default: -1)')
     parser.add_argument('--sigma', type=int, default=1,
@@ -343,7 +376,10 @@ if __name__ == '__main__':
                         help='not a heatmap...')
     parser.add_argument('--csv', action='store_true',
                         help='also save the heatmap data to a CSV file')
+    parser.add_argument('--provider', type=int, help=f'\nmap provider: {list_providers()} (default: {DEFAULT_MAP_PROVIDER})', default=DEFAULT_MAP_PROVIDER)
+    
 
     args = parser.parse_args()
+    validate_args(args)
 
     main(args)
